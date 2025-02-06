@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Puzzle do Circuito Elétrico 10x10 com Timer, Tela Inicial e Áudio</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f0f0f0;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      position: relative;
+      min-height: 100vh;
+    }
+    h1, h2 {
+      text-align: center;
+    }
+    #timer {
+      font-size: 1.5em;
+      margin-bottom: 10px;
+    }
+    #grid {
+      display: grid;
+      grid-template-columns: repeat(10, 60px);
+      grid-gap: 4px;
+      margin-top: 10px;
+    }
+    .cell {
+      width: 60px;
+      height: 60px;
+      background: #fff;
+      border: 2px solid #999;
+      border-radius: 8px;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.3s;
+    }
+    /* Indica que a peça está na orientação correta */
+    .cell.correct {
+      background: #c8f7c5;
+    }
+    /* Células especiais: início e fim */
+    .cell.start {
+      border-left: 6px solid purple;
+    }
+    .cell.end {
+      border-right: 6px solid deeppink;
+    }
+    /* Overlay de vitória */
+    #winOverlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 2em;
+      z-index: 10;
+      display: none;
+    }
+    /* Tela inicial */
+    #startOverlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.85);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 20;
+    }
+    #startOverlay button {
+      font-size: 1.2em;
+      padding: 10px 20px;
+      margin-top: 20px;
+      cursor: pointer;
+      border: none;
+      border-radius: 5px;
+      background: #28a745;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <!-- Tela inicial de confirmação -->
+  <div id="startOverlay">
+    <h1>Puzzle do Circuito</h1>
+    <h2>Você tem 1:30 para concluir o desafio!</h2>
+    <button id="startButton">Iniciar Puzzle</button>
+  </div>
+
+  <h1>Conduza a Energia!</h1>
+  <div id="timer">01:30</div>
+  <div id="grid"></div>
+  <div id="winOverlay">Desafio concluído!</div>
+
+  <!-- Áudio de tick tock (substitua "ticktock.mp3" pelo caminho do seu arquivo) -->
+  <audio id="clockAudio" loop>
+    <source src="clock.mpeg" type="audio/mp3">
+    Seu navegador não suporta o elemento de áudio.
+  </audio>
+
+  <script>
+    // ----------------------------------------------------------------------------
+    // Variáveis globais e timer
+    // ----------------------------------------------------------------------------
+    const GRID_SIZE = 10;
+    let gridData = [];
+    let timerInterval = null;
+    let timeRemaining = 90; // 90 segundos = 1:30
+
+    // Elementos da interface
+    const gridContainer = document.getElementById("grid");
+    const winOverlay = document.getElementById("winOverlay");
+    const timerDisplay = document.getElementById("timer");
+    const startOverlay = document.getElementById("startOverlay");
+    const startButton = document.getElementById("startButton");
+    const clockAudio = document.getElementById("clockAudio");
+
+    // ----------------------------------------------------------------------------
+    // Desenhos base (em SVG) para as peças:
+    // ----------------------------------------------------------------------------
+    const PIECE_SVGS = {
+      straight: `
+        <rect x="10" y="40" width="80" height="20" rx="10" fill="none" 
+              stroke="black" stroke-width="12" stroke-linecap="round" />
+      `,
+      corner: `
+        <path d="M50,10 A40,40 0 0,1 90,50" fill="none" 
+              stroke="black" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+      `
+    };
+
+    // ----------------------------------------------------------------------------
+    // Função auxiliar para sortear uma rotação entre 0, 90, 180, 270
+    // ----------------------------------------------------------------------------
+    function randomRotation() {
+      const rotations = [0, 90, 180, 270];
+      return rotations[Math.floor(Math.random() * rotations.length)];
+    }
+
+    // ----------------------------------------------------------------------------
+    // Geração do gridData com um novo modelo de circuito
+    // ----------------------------------------------------------------------------
+    function generateGridData() {
+      gridData = [];
+      // Preenche a grid linha a linha (row 0 a 9 e col 0 a 9)
+      for (let row = 0; row < GRID_SIZE; row++) {
+        for (let col = 0; col < GRID_SIZE; col++) {
+          let cell = { row, col, special: null };
+
+          // Define o caminho solução:
+          // - Primeira linha: células (0,0) a (0,9)
+          //   * (0,0): início – peça "straight" horizontal (target = 0)
+          //   * (0,1) a (0,8): peças "straight" horizontal (target = 0)
+          //   * (0,9): peça "corner" para virar para baixo (target = 180)
+          // - Última coluna: células (1,9) a (9,9)
+          //   * (1,9) a (8,9): peças "straight" vertical (target = 90)
+          //   * (9,9): fim – peça "corner" para conectar de cima para a direita (target = 0)
+          if (row === 0 && col < GRID_SIZE) {
+            if (col === 0) {
+              cell.type = "straight";
+              cell.target = 0; // horizontal (conecta esquerda e direita)
+              cell.special = "start";
+            } else if (col < GRID_SIZE - 1) {
+              cell.type = "straight";
+              cell.target = 0;
+            } else {
+              cell.type = "corner";
+              cell.target = 180; // conecta vindo da esquerda para baixo
+            }
+          } else if (col === GRID_SIZE - 1 && row > 0) {
+            if (row < GRID_SIZE - 1) {
+              cell.type = "straight";
+              cell.target = 90; // vertical (desenho base é horizontal)
+            } else {
+              cell.type = "corner";
+              cell.target = 0; // conecta vindo de cima para a direita
+              cell.special = "end";
+            }
+          } else {
+            // Células de distração: sorteia entre "straight" e "corner" e define target aleatório
+            cell.type = (Math.random() < 0.5) ? "straight" : "corner";
+            cell.target = randomRotation();
+          }
+          // Define a rotação inicial aleatória
+          cell.current = randomRotation();
+          gridData.push(cell);
+        }
+      }
+    }
+
+    // ----------------------------------------------------------------------------
+    // Função que cria o HTML para cada célula com seu SVG e configuração do evento de clique.
+    // ----------------------------------------------------------------------------
+    function createCellElement(cell, index) {
+      const div = document.createElement("div");
+      div.classList.add("cell");
+      if (cell.special === "start") div.classList.add("start");
+      if (cell.special === "end") div.classList.add("end");
+      div.dataset.index = index;
+
+      // Cria o SVG (60x60 com viewBox 0 0 100 100)
+      const svgNS = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(svgNS, "svg");
+      svg.setAttribute("viewBox", "0 0 100 100");
+      svg.setAttribute("width", "60");
+      svg.setAttribute("height", "60");
+
+      // Cria um grupo (<g>) para aplicar a rotação no desenho
+      const g = document.createElementNS(svgNS, "g");
+      g.innerHTML = PIECE_SVGS[cell.type];
+      g.setAttribute("transform", `rotate(${cell.current}, 50, 50)`);
+      g.classList.add("piece");
+
+      svg.appendChild(g);
+      div.appendChild(svg);
+
+      // Se a peça já estiver na orientação correta, marca o fundo
+      if (cell.current === cell.target) {
+        div.classList.add("correct");
+      }
+
+      // Evento de clique: gira a peça e checa se está correta
+      div.addEventListener("click", () => {
+        cell.current = (cell.current + 90) % 360;
+        g.setAttribute("transform", `rotate(${cell.current}, 50, 50)`);
+        if (cell.current === cell.target) {
+          div.classList.add("correct");
+        } else {
+          div.classList.remove("correct");
+        }
+        checkCompletion();
+      });
+
+      return div;
+    }
+
+    // ----------------------------------------------------------------------------
+    // Renderiza o grid na tela
+    // ----------------------------------------------------------------------------
+    function renderGrid() {
+      gridContainer.innerHTML = "";
+      gridData.forEach((cell, index) => {
+        const cellEl = createCellElement(cell, index);
+        gridContainer.appendChild(cellEl);
+      });
+    }
+
+    // ----------------------------------------------------------------------------
+    // Verifica se todas as peças estão na orientação correta.
+    // ----------------------------------------------------------------------------
+    function checkCompletion() {
+      const allCorrect = gridData.every(cell => cell.current === cell.target);
+      if (allCorrect) {
+        winOverlay.style.display = "flex";
+        clearInterval(timerInterval);
+        // Para o áudio ao concluir o desafio
+        clockAudio.pause();
+      }
+    }
+
+    // ----------------------------------------------------------------------------
+    // Atualiza o display do timer no formato MM:SS
+    // ----------------------------------------------------------------------------
+    function updateTimerDisplay() {
+      const minutes = Math.floor(timeRemaining / 60);
+      const seconds = timeRemaining % 60;
+      timerDisplay.textContent = 
+        (minutes < 10 ? "0" + minutes : minutes) + ":" + 
+        (seconds < 10 ? "0" + seconds : seconds);
+    }
+
+    // ----------------------------------------------------------------------------
+    // Função para iniciar o timer de 1:30 (90 segundos)
+    // ----------------------------------------------------------------------------
+    function startTimer() {
+      timeRemaining = 90;
+      updateTimerDisplay();
+      timerInterval = setInterval(() => {
+        timeRemaining--;
+        updateTimerDisplay();
+        if (timeRemaining <= 0) {
+          clearInterval(timerInterval);
+          resetGame();
+        }
+      }, 1000);
+    }
+
+    // ----------------------------------------------------------------------------
+    // Função para resetar o jogo: reinicia o timer, gera novo circuito, oculta overlays e reinicia o áudio
+    // ----------------------------------------------------------------------------
+    function resetGame() {
+      winOverlay.style.display = "none";
+      generateGridData();
+      renderGrid();
+      startTimer();
+      // Reinicia e toca o áudio do tick tock
+      clockAudio.currentTime = 0;
+      clockAudio.play();
+    }
+
+    // ----------------------------------------------------------------------------
+    // Evento para iniciar o jogo a partir da tela inicial
+    // ----------------------------------------------------------------------------
+    startButton.addEventListener("click", () => {
+      startOverlay.style.display = "none";
+      resetGame();
+    });
+  </script>
+</body>
+</html>
